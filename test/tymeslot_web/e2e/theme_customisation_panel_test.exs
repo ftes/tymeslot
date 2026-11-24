@@ -10,9 +10,9 @@ defmodule TymeslotWeb.E2E.ThemeCustomisationPanelTest do
   solid colour, image and video preset click sent `"value":""` and nothing
   the user picked was ever saved. `LiveViewTest`'s `render_click/1` reads
   `phx-value-*` directly from the element and never reproduces the bug, so
-  this drives a real Chrome session instead.
+  this drives a real browser session instead.
   """
-  use TymeslotWeb.BrowserCase, async: false
+  use TymeslotWeb.BrowserCase, async: true
 
   import Tymeslot.TestHelpers.Eventually
 
@@ -22,20 +22,20 @@ defmodule TymeslotWeb.E2E.ThemeCustomisationPanelTest do
   @moduletag :e2e
   @moduletag :themes
 
-  feature "picking a palette scheme and a background preset persists both",
-          %{session: session} do
-    {session, user} = log_in_via_browser(session)
+  test "picking a palette scheme and a background preset persists both",
+       %{session: session} do
+    {session, user} = log_in(session)
     profile = Profiles.get_profile(user.id)
 
     session
     |> visit("/dashboard/pages/customize/1")
-    |> wait_for_live()
     |> click(
-      css(
-        "button[phx-click='theme:set_option'][phx-value-option='palette'][phx-value-field='scheme']",
-        # The scheme name is CSS `uppercase`, and WebDriver's rendered-text
-        # match respects that transform, so match the upper-cased text.
-        text: "SUNSET GLOW"
+      filter(
+        by_css(
+          "button[phx-click='theme:set_option'][phx-value-option='palette'][phx-value-field='scheme']"
+        ),
+        # The scheme name is CSS `uppercase`; the text match ignores case.
+        has_text: "SUNSET GLOW"
       )
     )
 
@@ -50,11 +50,13 @@ defmodule TymeslotWeb.E2E.ThemeCustomisationPanelTest do
     )
 
     session
-    |> click(css("button[phx-click='theme:set_browsing_type'][phx-value-type='gradient']"))
+    |> click(by_css("button[phx-click='theme:set_browsing_type'][phx-value-type='gradient']"))
     |> click(
-      css(
-        "button[phx-click='theme:set_option'][phx-value-option='background'][phx-value-field='gradient']",
-        text: "FOREST"
+      filter(
+        by_css(
+          "button[phx-click='theme:set_option'][phx-value-option='background'][phx-value-field='gradient']"
+        ),
+        has_text: "FOREST"
       )
     )
 

@@ -1,5 +1,5 @@
 defmodule TymeslotWeb.E2E.PasswordResetTest do
-  use TymeslotWeb.BrowserCase, async: false
+  use TymeslotWeb.BrowserCase, async: true
 
   @moduletag :e2e
   @moduletag :auth
@@ -22,24 +22,26 @@ defmodule TymeslotWeb.E2E.PasswordResetTest do
     :ok
   end
 
-  feature "user can request password reset, set new password, and log in", %{session: session} do
+  test "user can request password reset, set new password, and log in", %{session: session} do
     user = create_onboarded_user()
 
     # Request password reset
     session =
       session
       |> visit("/auth/login")
-      |> wait_for_live()
-      |> click(css("button[phx-value-to='reset_password']"))
-      |> fill_in(text_field("email"), with: user.email)
-      |> click(css("button[type='submit']"))
+      |> click(by_css("button[phx-value-to='reset_password']"))
+      # The login form has an "Email Address" field too; filling before the
+      # view swaps in the reset form would sign in with no password.
+      |> assert_has(by_css("#reset-password-form"))
+      |> fill(by_label("Email Address"), user.email)
+      |> click(by_css("button[type='submit']"))
 
     # Should show confirmation
-    assert_has(session, css("a[href='/auth/login']"))
+    assert_has(session, by_css("a[href='/auth/login']"))
 
     # Drain the Oban :emails queue to trigger the mock and capture the reset URL.
     # The job is inserted synchronously during the HTTP request, so it is
-    # guaranteed to be in the queue by the time Wallaby asserts the confirmation.
+    # guaranteed to be in the queue by the time the browser test asserts the confirmation.
     Oban.drain_queue(queue: :emails)
 
     assert_receive {:password_reset_url, reset_url}, 2_000
@@ -51,21 +53,19 @@ defmodule TymeslotWeb.E2E.PasswordResetTest do
     session =
       session
       |> visit("/auth/reset-password/#{token}")
-      |> wait_for_live()
-      |> fill_in(css("#password-input"), with: new_password)
-      |> fill_in(css("#confirm-password-input"), with: new_password)
-      |> click(css("button[type='submit']"))
+      |> fill(by_css("#password-input"), new_password)
+      |> fill(by_css("#confirm-password-input"), new_password)
+      |> click(by_css("button[type='submit']"))
 
     # Should show success page with a "Log In" button
-    assert_has(session, css("button", text: "Log In"))
+    assert_has(session, filter(by_css("button"), has_text: "Log In"))
 
     # Log in with the new password
     session
     |> visit("/auth/login")
-    |> wait_for_live()
-    |> fill_in(text_field("email"), with: user.email)
-    |> fill_in(css("#password-input"), with: new_password)
-    |> click(css("button[type='submit']"))
+    |> fill(by_label("Email Address"), user.email)
+    |> fill(by_css("#password-input"), new_password)
+    |> click(by_css("button[type='submit']"))
     |> wait_for_dashboard()
   end
 end

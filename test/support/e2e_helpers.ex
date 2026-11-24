@@ -3,14 +3,20 @@ defmodule TymeslotWeb.E2EHelpers do
   Shared browser interaction helpers for E2E tests.
   """
 
-  import ExUnit.Assertions
-  import Wallaby.Browser
-  import Wallaby.Query
+  use Fluffy.Assert
 
+  import Fluffy
+  import Fluffy.Locator
+  import Fluffy.Playwright, only: [evaluate: 3, evaluate: 4, set_viewport_size: 2]
+
+  alias Phoenix.ConnTest
+  alias Plug.Test, as: PlugTest
   alias Tymeslot.Auth.UserSchema
+  alias Tymeslot.AuthTestHelpers
   alias Tymeslot.Factory
   alias Tymeslot.Profiles
   alias Tymeslot.Profiles.ProfileQueries
+  alias TymeslotWeb.Endpoint
 
   @default_password "Password123!"
 
@@ -18,10 +24,10 @@ defmodule TymeslotWeb.E2EHelpers do
   # themes are already guarded at in `EmbedSizesMatrixTest`. Keeping a single
   # floor across the suite means "fits on a phone" means the same thing
   # everywhere. The height matches the mobile viewport in `DashboardTourTest`.
-  @mobile_viewport {320, 844}
+  @mobile_viewport %{width: 320, height: 844}
 
-  # Sub-pixel rounding in the WebDriver bridge can report scrollWidth one px
-  # over innerWidth even when the page genuinely fits.
+  # Sub-pixel rounding can report scrollWidth one px over innerWidth even when
+  # the page genuinely fits.
   @overflow_tolerance 1
 
   @doc """
@@ -31,7 +37,8 @@ defmodule TymeslotWeb.E2EHelpers do
   def default_password, do: @default_password
 
   @doc """
-  Logs in a user via the browser login form.
+  Logs in a user via the browser login form, for a test about the form or
+  what signing in shows; `log_in/2` skips the form.
 
   Creates a verified user (with onboarding completed and a profile) from the
   given attributes, then navigates to `/auth/login`, fills the form, and waits
@@ -39,20 +46,55 @@ defmodule TymeslotWeb.E2EHelpers do
 
   Returns `{session, user}`.
   """
-  @spec log_in_via_browser(Wallaby.Session.t(), map()) :: {Wallaby.Session.t(), UserSchema.t()}
+  @spec log_in_via_browser(Fluffy.Session.t(), map()) :: {Fluffy.Session.t(), UserSchema.t()}
   def log_in_via_browser(session, user_attrs \\ %{}) do
     user = create_onboarded_user(user_attrs)
 
     session =
       session
       |> visit("/auth/login")
-      |> wait_for_live()
-      |> fill_in(text_field("email"), with: user.email)
-      |> fill_in(css("#password-input"), with: @default_password)
-      |> click(css("button[type='submit']"))
+      |> fill(by_label("Email Address"), user.email)
+      |> fill(by_css("#password-input"), @default_password)
+      |> click(by_css("button[type='submit']"))
       |> wait_for_dashboard()
 
     {session, user}
+  end
+
+  @doc """
+  Logs in a user without the login form, for a test that isn't about it.
+
+  Creates a verified user (with onboarding completed and a profile) from the
+  given attributes and gives the browser the session cookie a login would set:
+  the app's own `Tymeslot.AuthTestHelpers.log_in_user/2` signs the user in on
+  an in-process conn, and one request through the endpoint writes the cookie.
+  The browser stays where it is; the test visits its first page itself.
+
+  Returns `{session, user}`.
+  """
+  @spec log_in(Fluffy.Session.t(), map()) :: {Fluffy.Session.t(), UserSchema.t()}
+  def log_in(session, user_attrs \\ %{}) do
+    user = create_onboarded_user(user_attrs)
+    {log_in_as(session, user), user}
+  end
+
+  @doc """
+  Gives the browser the session cookie of `user`, as `log_in/2` does, for a
+  user the test has already created.
+  """
+  @spec log_in_as(Fluffy.Session.t(), UserSchema.t()) :: Fluffy.Session.t()
+  def log_in_as(session, user) do
+    conn =
+      ConnTest.build_conn()
+      |> PlugTest.init_test_session(%{})
+      |> AuthTestHelpers.log_in_user(user)
+      |> ConnTest.dispatch(Endpoint, :get, "/", nil)
+
+    cookies =
+      for {name, %{value: value}} <- conn.resp_cookies,
+          do: %{name: name, value: value, url: Fluffy.base_url(session)}
+
+    add_cookies(session, cookies)
   end
 
   @doc """
@@ -67,19 +109,19 @@ defmodule TymeslotWeb.E2EHelpers do
   it. The client adds `phx-connected` to the root once the join succeeds, so
   that is what makes the page interactive.
   """
-  @spec wait_for_live(Wallaby.Session.t()) :: Wallaby.Session.t()
+  @spec wait_for_live(Fluffy.Session.t()) :: Fluffy.Session.t()
   def wait_for_live(session) do
-    assert_has(session, css("[data-phx-main].phx-connected", count: :any, minimum: 1))
+    assert_has(session, first(by_css("[data-phx-main].phx-connected")))
   end
 
   @doc """
   Waits for the dashboard to appear after login, with its LiveView connected
   (see `wait_for_live/1`).
   """
-  @spec wait_for_dashboard(Wallaby.Session.t()) :: Wallaby.Session.t()
+  @spec wait_for_dashboard(Fluffy.Session.t()) :: Fluffy.Session.t()
   def wait_for_dashboard(session) do
     session
-    |> assert_has(css("#dashboard-root"))
+    |> assert_has(by_css("#dashboard-root"))
     |> wait_for_live()
   end
 
@@ -115,17 +157,22 @@ defmodule TymeslotWeb.E2EHelpers do
   end
 
   @doc """
-  Resizes the browser to the narrowest viewport the design system targets.
+  The narrowest viewport the design system targets, for a test that runs at it
+  throughout: `@tag Playwright.Test.use(viewport: E2EHelpers.mobile_viewport())`.
+  """
+  @spec mobile_viewport() :: %{width: pos_integer(), height: pos_integer()}
+  def mobile_viewport, do: @mobile_viewport
+
+  @doc """
+  Resizes the browser to `mobile_viewport/0`, for a test that switches to it
+  part way through.
 
   Resize *before* navigating rather than after. Measuring a page that was laid
   out wide and then squeezed races any width transition still in flight; a
   fresh load at the target width does not.
   """
-  @spec resize_to_mobile(Wallaby.Session.t()) :: Wallaby.Session.t()
-  def resize_to_mobile(session) do
-    {width, height} = @mobile_viewport
-    resize_window(session, width, height)
-  end
+  @spec resize_to_mobile(Fluffy.Session.t()) :: Fluffy.Session.t()
+  def resize_to_mobile(session), do: set_viewport_size(session, @mobile_viewport)
 
   @doc """
   Asserts no element extends past the right edge of the viewport.
@@ -150,11 +197,16 @@ defmodule TymeslotWeb.E2EHelpers do
   the one element worth fixing.
 
   `context` is quoted verbatim in the failure message, so name the screen and
-  the width.
+  the width. With `frame`, it measures the document inside that frame (see
+  `evaluate_script/4`).
   """
-  @spec assert_no_horizontal_overflow(Wallaby.Session.t(), String.t()) :: Wallaby.Session.t()
-  def assert_no_horizontal_overflow(session, context) do
-    culprits = evaluate_script(session, overflow_script())
+  @spec assert_no_horizontal_overflow(
+          Fluffy.Session.t(),
+          String.t(),
+          Fluffy.FrameLocator.t() | nil
+        ) :: Fluffy.Session.t()
+  def assert_no_horizontal_overflow(session, context, frame \\ nil) do
+    culprits = evaluate_script(session, overflow_script(), frame)
 
     assert culprits == [],
            """
@@ -167,19 +219,43 @@ defmodule TymeslotWeb.E2EHelpers do
   end
 
   @doc """
-  Runs `script` in the page and returns the value its `return` statement
-  yields, for an assertion to inspect. `Wallaby.Browser.execute_script/3` only
-  hands the value to a callback.
+  A CSS locator in the page, or inside `frame`, a `Fluffy.Locator.frame_locator/1`,
+  for the steps that run in both.
   """
-  @spec evaluate_script(Wallaby.Session.t(), String.t()) :: term()
-  def evaluate_script(session, script) do
-    me = self()
-    ref = make_ref()
+  @spec css_in(Fluffy.FrameLocator.t() | nil, String.t()) :: Fluffy.Locator.t()
+  def css_in(nil, selector), do: by_css(selector)
+  def css_in(frame, selector), do: by_css(frame, selector)
 
-    execute_script(session, script, fn value -> send(me, {:script_result, ref, value}) end)
+  @doc """
+  The element with `data-testid` `test_id`, in the page or inside `frame`, as
+  `css_in/2`.
+  """
+  @spec test_id_in(Fluffy.FrameLocator.t() | nil, String.t()) :: Fluffy.Locator.t()
+  def test_id_in(nil, test_id), do: by_test_id(test_id)
+  def test_id_in(frame, test_id), do: by_test_id(frame, test_id)
 
-    assert_receive {:script_result, ^ref, value}, 5_000
-    value
+  @doc """
+  Runs `script`, a function body, in the page and returns the value its
+  `return` statement yields, for an assertion to inspect. The body can read
+  `arg`. JavaScript's `null` comes back as `:null`.
+
+  With `frame`, a `Fluffy.Locator.frame_locator/1`, the script runs in that
+  frame's document instead.
+  """
+  @spec evaluate_script(Fluffy.Session.t(), String.t(), Fluffy.FrameLocator.t() | nil, term()) ::
+          term()
+  def evaluate_script(session, script, frame \\ nil, arg \\ nil)
+
+  def evaluate_script(session, script, nil, arg),
+    do: evaluate(session, "(arg) => {\n#{script}\n}", arg)
+
+  def evaluate_script(session, script, frame, arg) do
+    evaluate(
+      session,
+      by_css(frame, ":root"),
+      "(_root, arg) => {\n#{script}\n}",
+      arg
+    )
   end
 
   defp overflow_script do

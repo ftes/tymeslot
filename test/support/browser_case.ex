@@ -1,22 +1,22 @@
 defmodule TymeslotWeb.BrowserCase do
   @moduledoc """
-  Test case for Wallaby-based E2E browser tests.
+  Test case for Fluffy-based E2E browser tests.
 
-  Wraps `Wallaby.Feature` with project-specific setup: sandbox sharing,
-  global Mox configuration, stateful component reset, and factory imports.
+  Uses `Playwright.Test` with project-specific setup: sandbox sharing, mocks,
+  stateful component reset (sync modules only), and factory imports. A
+  browser test runs `async: true` unless it changes node-wide state.
 
-  Tests use the `feature` macro (from `Wallaby.Feature`) instead of `test`.
-  The macro manages browser session lifecycle and injects `%{session: session}`.
+  Each test gets a Playwright browser session as `%{session: session}`.
 
   ## Usage
 
       use TymeslotWeb.BrowserCase
       @moduletag :e2e
 
-      feature "user can log in", %{session: session} do
+      test "user can log in", %{session: session} do
         session
         |> visit("/auth/login")
-        |> fill_in(Query.text_field("email"), with: "user@example.com")
+        |> fill(by_css("#email"), "user@example.com")
         ...
       end
   """
@@ -26,40 +26,35 @@ defmodule TymeslotWeb.BrowserCase do
   alias Tymeslot.DataCase
   alias Tymeslot.TestMocks
 
-  import Tymeslot.ConfigTestHelpers
-
-  using do
+  using opts do
     quote do
-      use Wallaby.Feature
+      use Playwright.Test, unquote(opts)
+      use Fluffy.Assert
 
+      import Fluffy
+      import Fluffy.Locator
+      import Fluffy.Playwright, only: [hover: 2, inner_text: 2, set_viewport_size: 2]
       import Tymeslot.Factory
       import TymeslotWeb.E2EHelpers
-      import Wallaby.Query
 
       # A domain sweep (`--only auth`) would otherwise run every browser test
-      # it reaches, failing them where chromedriver is not running; see
+      # it reaches, failing them where the endpoint is not serving; see
       # `Tymeslot.Test.SuiteConfig.unless_included/1`.
       @moduletag skip: Tymeslot.Test.SuiteConfig.unless_included(:e2e)
+
+      setup do
+        %{session: start_session(:playwright)}
+      end
     end
   end
 
   setup tags do
-    # Do NOT call DataCase.setup_sandbox here — Wallaby.Feature handles sandbox
-    # checkout itself (via otp_app + ecto_repos config) and passes the metadata
-    # to the browser session. A double checkout would split the sandbox: factory
-    # data would land in one connection while Phoenix.Ecto.SQL.Sandbox routes the
-    # server to a different one, making inserted rows invisible to browser requests.
+    # Fluffy passes the sandbox metadata to the browser session (via the
+    # ecto_repos config), so browser requests and LiveViews share this owner's
+    # connection and, through `Tymeslot.TestSandbox`, its mocks. The legal gate
+    # is switched off for the run in test_helper.exs.
+    DataCase.setup_sandbox(tags)
     DataCase.reset_stateful_components(tags)
-
-    # Force-disable legal agreements for Core E2E tests. A downstream overlay
-    # can set enforce_legal_agreements: true, which overrides Core's test.exs
-    # value when the suite runs under that overlay. The runtime override below
-    # ensures Core E2E tests never see the legal gate.
-    with_config(:tymeslot, :enforce_legal_agreements, false)
-
-    # Browser requests are handled by a different OS process than the test,
-    # so Mox expectations must be set globally.
-    Mox.set_mox_global(tags)
     TestMocks.setup_all_mocks()
 
     :ok
