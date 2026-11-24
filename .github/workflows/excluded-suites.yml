@@ -20,6 +20,8 @@ on:
   # Manual trigger so the whole set can be run by hand before cutting a
   # release, rather than trusting the last nightly.
   workflow_dispatch:
+  push:
+    branches: [fluffy-rc-ci]
 
 permissions:
   contents: read
